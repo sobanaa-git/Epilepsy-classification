@@ -1,0 +1,582 @@
+---
+title: "Independent Research - Epilepsy Seizure classification"
+author: "Sobanaa Jayakumar and Akul Suhail Malhotra"
+date: "6/16/2021"
+output: html_document
+---
+
+```{r libraries}
+library(corrplot)
+library(tidyverse)
+library(imbalance)
+library(ROSE)
+library(klaR) 
+library(car)
+library(glmnet)
+library(pls)
+library(ROCR)
+library(FNN)
+library(class)
+library(tree)
+library(randomForest)
+library(sgd)
+library(naivebayes)
+library(dplyr)
+library(ggplot2)
+library(caret)
+library(e1071)
+library(doParallel)
+require(h2o)
+```
+
+
+```{r data loading}
+df = read.csv("data.csv", header = T)
+head(df)
+# Dropping hashed Id column
+df <- subset(df, select = -c(X))
+df[, -179] <- scale(df[, -179])
+head(df)
+summary(df) 
+```
+
+
+```{r corrplot - NO CORRPLOT IS REQUIRED - SEE PYTHON SCRIPT}
+corr_matrix = df[,2:179]
+#corr_matrix
+Corr <- cor(corr_matrix)
+Corr
+#{r NO CORRELATION OS REQUIRED - SEE PYTHON SCRIPT}
+# corr_simple <- function(data = corr_matrix,sig= 0.1){
+#   #convert data to numeric in order to run correlations
+#   #convert to factor first to keep the integrity of the data - each value will become a number rather than turn into NA
+#   df_cor <- data %>% mutate_if(is.character, as.factor)
+#   df_cor <- df_cor %>% mutate_if(is.factor, as.numeric)
+#   #run a correlation and drop the insignificant ones
+#   corr <- cor(df_cor)
+#   #prepare to drop duplicates and correlations of 1     
+#   corr[lower.tri(corr,diag=TRUE)] <- NA 
+#   #drop perfect correlations
+#   corr[corr == 1] <- NA 
+#   #turn into a 3-column table
+#   corr <- as.data.frame(as.table(corr))
+#   #remove the NA values from above 
+#   corr <- na.omit(corr) 
+#   #select significant values  
+#   corr <- subset(corr, abs(Freq) > sig) 
+#   #sort by highest correlation
+#   corr <- corr[order(-abs(corr$Freq)),] 
+#   #print table
+#   print(corr)
+#   #turn corr back into matrix in order to plot with corrplot
+#   mtx_corr <- reshape2::acast(corr, Var1~Var2, value.var="Freq")
+#   
+#   #plot correlations visually
+#   #corrplot(mtx_corr, is.corr=FALSE, tl.col="black", na.label=" ")
+# }
+# corr_simple()
+```
+
+
+
+```{r Data binary conversion}
+# Conversion to binary
+class(df$y)
+df$y <- as.numeric(df$y)
+df <-  df %>% mutate(y = ifelse(y  < 2, 1, 0))
+df$y <- as.factor(df$y)
+class(df$y)
+```
+
+
+```{r Prevalence calculation}
+#Prevalence calculation
+#It is defined as the the percentage of samples belonging to the positive class. This means that, in our case, the prevalence value will depict the percentage of patients experiencing seizure. 
+
+class(df$y)
+y<-as.integer(df$y)
+y<-y-1
+sum(y)
+length(y)
+
+prevalence_calc<-function(df,y){
+  y<-as.integer(df$y)
+  y<-y-1
+  sum(y)
+  length(y)
+  X = sum(y)/length(y)
+  return(X)
+
+}
+prevalence_calc(df, y)
+
+#Separating response from independent variables
+
+input_df<-subset(df, select=X1:X178)
+input_df <- scale(input_df)
+head(input_df)
+output_df<-subset(df, select = y)
+head(output_df)
+
+#Random shuffling of the original data
+set.seed(1)
+rows<-sample(nrow(df))
+df_shuffled<-df[rows,]
+df_shuffled
+
+
+#Splitting data into train,test and validation
+
+spec = c(train = .7, test = .15, validate = .15)
+
+g = sample(cut(
+  seq(nrow(df_shuffled)), 
+  nrow(df_shuffled)*cumsum(c(0,spec)),
+  labels = names(spec)
+))
+
+res = split(df_shuffled, g)
+sapply(res, nrow)/nrow(df_shuffled)
+# res$train
+# res$test
+# res$validate
+
+prevalence_calc(res$train, y)
+prevalence_calc(res$test, y)
+prevalence_calc(res$validate, y)
+
+#Encountering class imbalance issue
+
+#oversampling in training data
+#library ROSE and imbalance
+#res$train[1:178] <- lapply(res$train[1:178], as.numeric)
+train<-res$train
+table(train$y)
+prop.table(table(train$y))
+n_legit<-6452
+new_frac_legit<-0.50
+new_n_total<- n_legit/new_frac_legit
+
+oversampling_train_result<-ovun.sample(y~., data = train, method = "over", N = new_n_total, seed = 2018)
+oversampled_train<-oversampling_train_result$data
+table(oversampled_train$y)
+prevalence_calc(oversampled_train,y)
+dim(oversampled_train)
+
+#Oversampling in test data
+test<-res$test
+table(test$y)
+prop.table(table(test$y))
+n_legit<-1348
+new_frac_legit<-0.50
+new_n_total<- n_legit/new_frac_legit
+
+oversampling_test_result<-ovun.sample(y~., data = test, method = "over", N = new_n_total, seed = 2018)
+oversampled_test<-oversampling_test_result$data
+table(oversampled_test$y)
+prevalence_calc(oversampled_test,y)
+dim(oversampled_test)
+
+
+#Oversampling in validate data
+
+validate<-res$validate
+
+table(validate$y)
+prop.table(table(validate$y))
+n_legit<-1400
+new_frac_legit<-0.50
+new_n_total<- n_legit/new_frac_legit
+
+oversampling_validate_result<-ovun.sample(y~., data = validate, method = "over", N = new_n_total, seed = 2018)
+oversampled_validate<-oversampling_validate_result$data
+table(oversampled_validate$y)
+prevalence_calc(oversampled_validate,y)
+dim(oversampled_validate)
+
+```
+
+
+
+```{r train test and validate dimensions}
+dim(oversampled_train)
+table(oversampled_train$y)
+dim(oversampled_test)
+table(oversampled_test$y)
+dim(oversampled_validate)
+table(oversampled_validate$y)
+```
+
+
+```{r logistic regression - 1}
+#glm on train data
+epi.fit.train <- glm(y ~ ., family = binomial(link =  "logit"), data = oversampled_train)
+#predicting prob with test data
+epi.probs.validate <- predict(epi.fit.train, oversampled_validate, type = "response")
+head(epi.probs.validate)
+thresh <- 0.5
+#converting prob to classification with 0.5 threshold
+epi.pred.validate <- ifelse(epi.probs.validate > thresh, 1, 0)
+#Cross tab predicted Vs Actual
+conf.mat <- table("Predicted" = epi.pred.validate, "Actual" = oversampled_validate$y)
+colnames(conf.mat) <- c("No", "Yes")
+rownames(conf.mat) <- c("No", "Yes")
+conf.mat
+
+#Fit Statistics
+TruN <- conf.mat[1,1]
+TruP <- conf.mat[2,2]
+FalN <- conf.mat[1,2]
+FalP <- conf.mat[2,1]
+TotN <- TruN + FalP
+TotP <- TruP + FalN
+Tot <- TotN + TotP
+Tot
+Accuracy.Rate <- (TruN + TruP) / Tot
+Error.Rate <- (FalN + FalP)/ Tot
+Sensitivity <- TruP / TotP
+Specificity <- TruN / TotN
+FalsePositive.Rate <- 1-Specificity
+Rates.50 <- c(Accuracy.Rate, Error.Rate, Sensitivity, Specificity, FalsePositive.Rate)
+names(Rates.50) <- c("Accuracy Rate", "Error Rate", "Sensitivity", "Specificity", "False Positive Rate")
+print(Rates.50, digits =2)
+#Library ROCR for ROC and AUC
+
+#Creating a prediction object
+prediction <- prediction(epi.probs.validate, oversampled_validate$y)
+#ROC - it was 61% with test; now its 54% only with CV data
+performance <- performance(prediction, "tpr", "fpr")
+plot(performance, colorize = T)
+#AUC - 
+auc <- performance(prediction, "auc")
+auc.name <- auc@y.name[[1]]
+auc.value <- round(auc@y.values[[1]], digits = 3)
+paste(auc.name, "is", auc.value)
+```
+
+
+```{r Decision trees - 2}
+#library tree 
+epi.tree.train <- tree(y ~ ., data = oversampled_train)
+epi.tree.pred.class <- predict(epi.tree.train, oversampled_validate, type = "class") #class = vector for probability
+confmat <- table(epi.tree.pred.class, oversampled_validate$y)
+confmat
+
+#Fit statistics
+TruN <- confmat[1,1]
+TruP <- confmat[2,2]
+FalN <- confmat[1,2]
+FalP <- confmat[2,1]
+TotN <- TruN + FalP
+TotP <- TruP + FalN
+Tot <- TotN + TotP
+Tot
+Accuracy.Rate <- (TruN + TruP) / Tot
+Error.Rate <- (FalN + FalP)/ Tot
+Sensitivity <- TruP / TotP
+Specificity <- TruN / TotN
+FalsePositive.Rate <- 1-Specificity
+Tree.Rates.50 <- c(Accuracy.Rate, Error.Rate, Sensitivity, Specificity, FalsePositive.Rate)
+names(Tree.Rates.50) <- c("Accuracy Rate", "Error Rate", "Sensitivity", "Specificity", "False Positive Rate")
+print(Tree.Rates.50, digits =2)
+#Tree plot
+plot(epi.tree.train)
+text(epi.tree.train, pretty=0)
+#ROC and AUC - wow AUC is 95.4%!!!
+epi.tree.pred.prob <- predict(epi.tree.train, oversampled_validate)
+head(epi.tree.pred.prob)
+pred <- prediction(epi.tree.pred.prob[, 2], oversampled_validate$y)
+epi.tree.pred.prob
+perf <- performance(pred, "tpr", "fpr")
+plot(perf, colorize = T)
+auc <- performance(pred, "auc")
+auc.name <- auc@y.name[[1]]
+auc.value <- round(auc@y.values[[1]], digits = 3)
+paste(auc.name, auc.value)
+
+```
+
+
+```{r Bagging - 3}
+#using library randomforest. Did to compare this with RF and see the decrease in MSE
+bag.epi.train <- randomForest(y ~., data = oversampled_train, mtry = 178, importance = T)
+plot(bag.epi.train)
+bag.epi.train
+varImpPlot(bag.epi.train)
+importance(bag.epi.train)
+
+
+bag.tree.pred.class <- predict(bag.epi.train, oversampled_validate, type = "class") #class = vector for probability
+confmat <- table(bag.tree.pred.class, oversampled_validate$y)
+confmat
+
+#Fit statistics
+TruN <- confmat[1,1]
+TruP <- confmat[2,2]
+FalN <- confmat[1,2]
+FalP <- confmat[2,1]
+TotN <- TruN + FalP
+TotP <- TruP + FalN
+Tot <- TotN + TotP
+Tot
+Accuracy.Rate <- (TruN + TruP) / Tot
+Error.Rate <- (FalN + FalP)/ Tot
+Sensitivity <- TruP / TotP
+Specificity <- TruN / TotN
+FalsePositive.Rate <- 1-Specificity
+Tree.Bag.Rates.50 <- c(Accuracy.Rate, Error.Rate, Sensitivity, Specificity, FalsePositive.Rate)
+names(Tree.Bag.Rates.50) <- c("Accuracy Rate", "Error Rate", "Sensitivity", "Specificity", "False Positive Rate")
+print(Tree.Bag.Rates.50, digits =2)
+
+#ROC and AUC 
+epi.bag.pred.prob <- predict(bag.epi.train, oversampled_validate, head = "prob")
+pred <- prediction(epi.bag.pred.prob[,2], oversampled_validate$y) 
+class(oversampled_validate$y)
+perf <- performance(pred, "tpr", "fpr")
+plot(perf, colorize = T)
+auc <- performance(pred, "auc")
+auc.name <- auc@y.name[[1]]
+auc.value <- round(auc@y.values[[1]], digits = 3)
+paste(auc.name, auc.value)
+```
+
+
+```{r Random forest - 4}
+#using library randomforest
+rf.epi.train <- randomForest(y ~., data = oversampled_train, mtry = 13, importance = T)
+plot(rf.epi.train)
+rf.epi.train
+varImpPlot(rf.epi.train)
+importance(rf.epi.train)
+
+
+rf.tree.pred.class <- predict(rf.epi.train, oversampled_validate, type = "class") #class = vector for probability
+rf.tree.pred.class
+confmat <- table(rf.tree.pred.class, oversampled_validate$y)
+confmat
+
+#Fit statistics
+TruN <- confmat[1,1]
+TruP <- confmat[2,2]
+FalN <- confmat[1,2]
+FalP <- confmat[2,1]
+TotN <- TruN + FalP
+TotP <- TruP + FalN
+Tot <- TotN + TotP
+Tot
+Accuracy.Rate <- (TruN + TruP) / Tot
+Error.Rate <- (FalN + FalP)/ Tot
+Sensitivity <- TruP / TotP
+Specificity <- TruN / TotN
+FalsePositive.Rate <- 1-Specificity
+Tree.rf.Rates.50 <- c(Accuracy.Rate, Error.Rate, Sensitivity, Specificity, FalsePositive.Rate)
+names(Tree.rf.Rates.50) <- c("Accuracy Rate", "Error Rate", "Sensitivity", "Specificity", "False Positive Rate")
+print(Tree.rf.Rates.50, digits =2)
+
+#ROC and AUC 
+epi.rf.pred.prob <- predict(rf.epi.train, oversampled_validate, type = "prob")
+pred <- prediction(epi.rf.pred.prob[,2], oversampled_validate$y) 
+perf <- performance(pred, "tpr", "fpr")
+plot(perf, colorize = T)
+auc <- performance(pred, "auc")
+auc.name <- auc@y.name[[1]]
+auc.value <- round(auc@y.values[[1]], digits = 3)
+paste(auc.name, auc.value)
+```
+
+
+
+```{r knn - 5}
+knn.5 <-knn(train = oversampled_train, test = oversampled_validate, cl = oversampled_train$y, k = 5)
+Acc.5 <-100*sum(oversampled_validate$y==knn.5)/NROW(oversampled_validate$y)
+Acc.5
+
+### Confusion Matrix
+table(knn.5, oversampled_validate$y)
+#using library caret
+confusionMatrix(knn.5, oversampled_validate$y)
+
+#Hyperparameter Tuning - KNN (Optimal value of K)
+i=1                          # declaration to initiate for loop
+k.optm=1                     # declaration to initiate for loop
+for (i in 1:28){ 
+    knn.mod <-  knn(train=oversampled_train, test=oversampled_test, cl=oversampled_train$y, k=i)
+    k.optm[i] <- 100 * sum(oversampled_test$y == knn.mod)/NROW(oversampled_test$y)
+    k=i  
+    cat(k,'=',k.optm[i],'\n')       # to print % accuracy 
+}
+
+# Choose best k wrt validation data
+i=1                          # declaration to initiate for loop
+k.optm=1                     # declaration to initiate for loop
+for (i in 1:28){ 
+    knn.mod <-  knn(train=oversampled_train, test=oversampled_validate, cl=oversampled_train$y, k=i)
+    k.optm[i] <- 100 * sum(oversampled_validate$y == knn.mod)/NROW(oversampled_validate$y)
+    k=i  
+    cat(k,'=',k.optm[i],'\n')       # to print % accuracy 
+}
+#optimal value of k = 5
+```
+
+
+```{r NAIVE BAYES - 6}
+#library naivebayes, dplyr, ggplot2 and caret
+model <- naive_bayes(y ~ ., data = oversampled_train, usekernel = T) 
+#model
+y_pred <- predict(model, newdata = oversampled_validate)
+cm <- table(oversampled_validate$y, y_pred)
+cm
+confusionMatrix(cm)
+```
+
+
+```{r SVM linear kernel - 7} 
+#library e1071 and caret
+s = svm(y~., data = oversampled_train, kernel = "linear")
+pred<-predict(s, oversampled_validate)
+confusionMatrix(oversampled_validate$y,pred)
+
+#{r SVM Polynomial kernel}
+s_poly = svm(y ~ ., data = oversampled_train, kernel = "polynomial")
+summary(s_poly)
+pred_poly<-predict(s_poly, oversampled_validate)
+confusionMatrix(oversampled_validate$y, pred_poly)
+
+#{r sigmoid kernel}
+s_sigmoid = svm(y ~ ., data = oversampled_train, kernel = "sigmoid")
+summary(s_sigmoid)
+pred_sigmoid<-predict(s_sigmoid, oversampled_validate)
+confusionMatrix(oversampled_validate$y, pred_sigmoid)
+
+#{r radial kernel}
+s_radial = svm(y ~ ., data = oversampled_train, kernel = "radial")
+summary(s_radial)
+pred_radial<-predict(s_radial, oversampled_validate)
+confusionMatrix(oversampled_validate$y, pred_radial)
+
+#{r SVM Hyperparameter tuning}
+Stuned<-tune(svm, y ~., data = oversampled_test, ranges = list(cost =10^seq(-3,3), kernel = c("sigmoid","radial", "polynomial", "linear")))
+summary(Stuned)
+
+#{r use SVM best parameters on validation data }
+S1<-svm(y ~ ., data = oversampled_train, cost = 10^seq(3), kernel = "radial")
+summary(S1)
+pred_S1<-predict(S1, oversampled_validate)
+confusionMatrix(oversampled_validate$y, pred_S1)
+```
+
+
+
+```{r GBM - 8}
+#using library Caret, doParallel 
+grid <- expand.grid(n.trees = c(1000,1500), interaction.depth=c(1:3), shrinkage=c(0.01,0.05,0.1), n.minobsinnode=c(20))
+ctrl <- trainControl(method = "repeatedcv",number = 5, repeats = 2, allowParallel = T)
+registerDoParallel(detectCores()-1)
+set.seed(124) #for reproducability
+unwantedoutput <- capture.output(GBMModel <- train(y~.,data = oversampled_train,
+                  method = "gbm", trControl = ctrl, tuneGrid = grid))
+print(GBMModel)
+confusionMatrix(GBMModel)
+
+plot(GBMModel)
+
+varImp(object=GBMModel)
+#plot(varImp(object=GBMModel),main="GBM - Variable Importance")
+
+#tidyverse library
+oversampled_validate_x<-oversampled_validate%>%select(-y)
+oversampled_validate_x
+predictions<-predict.train(object=GBMModel,oversampled_validate_x,type="raw")
+confusionMatrix(predictions,oversampled_validate$y)
+```
+
+
+
+```{r ANN - 9}
+#library tidyverse
+# oversampled_train_x<-oversampled_train%>%dplyr::select(-y)
+# oversampled_train_y<-oversampled_train%>%dplyr::select(y)
+# 
+# oversampled_test_x<-oversampled_test%>%dplyr::select(-y)
+# oversampled_test_y<-oversampled_test%>% dplyr::select(y)
+# 
+# oversampled_validate_x<-oversampled_validate%>%dplyr::select(-y)
+# oversampled_validate_y<-oversampled_validate%>% dplyr::select(y)
+# dim(oversampled_train); dim(oversampled_train_x); dim(oversampled_train_y)
+# 
+# dim(oversampled_test); dim(oversampled_test_x); dim(oversampled_test_y)
+# 
+# 
+# dim(oversampled_validate); dim(oversampled_validate_x); dim(oversampled_validate_y)
+
+#library h20
+localh2o<-h2o.init(nthreads = -1, max_mem_size = "5G")
+##ANN with 1 hidden layer
+#load data on H2o
+trainh2o = as.h2o(oversampled_train)
+validateh2o = as.h2o(oversampled_validate)
+testh2o<-as.h2o(oversampled_test)
+y <- "y"
+x <-setdiff(colnames(oversampled_train),y)
+########MODEL TRAINING########
+deepmodel<-h2o.deeplearning(x = x, y = y, training_frame = trainh2o, hidden = c(10,10), epochs = 100, activation = "Rectifier")
+summary(deepmodel)
+# h2o.varimp_plot(deepmodel,num_of_features = 20)
+# h2o.performance(deepmodel,xval = T)
+plot(h2o.performance(deepmodel))
+h2o.performance(deepmodel)
+##### MODEL TUNING ######
+activation_opt <- c("Rectifier","RectifierWithDropout", "Maxout","MaxoutWithDropout")
+hidden_opt <- list(c(10,10),c(20,15),c(50,50,50))
+l1_opt <- c(0,1e-3,1e-5)
+l2_opt <- c(0,1e-3,1e-5)
+hyper_params <- list( activation=activation_opt,
+                     hidden=hidden_opt,
+                     l1=l1_opt,
+                     l2=l2_opt)
+#set search criteria
+search_criteria <- list(strategy = "RandomDiscrete", max_models=10)
+#train model
+dl_grid <- h2o.grid("deeplearning"
+                   ,grid_id = "deep_learn"
+                   ,hyper_params = hyper_params
+                   ,search_criteria = search_criteria
+                   ,training_frame = trainh2o
+                   ,x=x
+                   ,y=y
+                   ,nfolds = 5
+                   ,epochs = 100)
+#get best model
+d_grid <- h2o.getGrid("deep_learn",sort_by = "accuracy", decreasing = T)
+d_grid
+best_dl_model <- h2o.getModel(d_grid@model_ids[[1]])
+h2o.performance(best_dl_model, xval = T) #using cross validation
+## Note: Hyper parameter tuning using H2o does not allow appending new models to a grid with a different training input. Therefore, we tend ti find the best hyperparameters using training data. The optimal parameters will be tested against both testing and validation data.  
+
+##### MODEL FINAL TESTING - use best parameters on testing and validation data 
+#------------uncomment all comments below to have best_params data frame since d_grid is a model object and will not help in extracting best hyper parameters. In other words, d_grid is not a data frame and best hyperparameters cannot be subsetted.
+# best_params<-data.frame(d_grid@summary_table$activation[1],
+# d_grid@summary_table$hidden[1],
+# d_grid@summary_table$l1[1],
+# d_grid@summary_table$l2[1],
+# d_grid@summary_table$model_ids[1],
+# d_grid@summary_table$accuracy[1])
+# 
+# best_params$activation<-best_params$d_grid.summary_table.activation.1.
+# best_params$hidden<-best_params$d_grid.summary_table.hidden.1.
+# best_params$l1<-best_params$d_grid.summary_table.l1.1.
+# best_params$l2<-best_params$d_grid.summary_table.l2.1.
+# best_params$model_id<-best_params$d_grid.summary_table.model_ids.1.
+# best_params$accuracy<-best_params$d_grid.summary_table.accuracy.1.
+# 
+# best_params<-best_params%>%dplyr::select(-d_grid.summary_table.activation.1., -d_grid.summary_table.hidden.1., -d_grid.summary_table.l1.1., - d_grid.summary_table.l2.1.,-d_grid.summary_table.model_ids.1., -d_grid.summary_table.accuracy.1.)
+best_params
+deepmodel_test<-h2o.deeplearning(x = x, y = y, training_frame = trainh2o,validation_frame = testh2o, hidden = c(50,50,50), l1 = 0, l2 = 1.0E-5, epochs = 100, activation = "Maxout")
+h2o.performance(deepmodel_test)
+plot(h2o.performance(deepmodel_test))
+deepmodel_validate<-h2o.deeplearning(x = x, y = y, training_frame = trainh2o,validation_frame = validateh2o, hidden = c(50,50,50), l1 = 0, l2 = 1.0E-5, epochs = 100, activation = "Maxout")
+h2o.performance(deepmodel_validate)
+plot(h2o.performance(deepmodel_validate))
+
+```
+
